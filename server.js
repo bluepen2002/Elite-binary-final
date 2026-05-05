@@ -1,3 +1,4 @@
+require('dotenv').config();
 const http = require('http');
 const https = require('https');
 const fs = require('fs');
@@ -10,6 +11,7 @@ const DATA_DIR = path.join(__dirname, 'data');
 const DB_PATH = path.join(DATA_DIR, 'db.json');
 const MPESA_ENV = (process.env.MPESA_ENV || 'sandbox').toLowerCase();
 const MPESA_HOST = MPESA_ENV === 'production' ? 'api.safaricom.co.ke' : 'sandbox.safaricom.co.ke';
+const MOCK_PAYMENTS = process.env.MOCK_PAYMENTS === 'false' ? false : true;
 
 const defaultDb = {
   config: {
@@ -18,7 +20,7 @@ const defaultDb = {
     winProbability: 0.5,
     settlementDelayMs: 900,
     designatedWallet: 'NCBA Loop 440200250861 / Channel ID 7598',
-    mockPayments: true
+    mockPayments: MOCK_PAYMENTS
   },
   users: [],
   deposits: [],
@@ -588,6 +590,9 @@ const server = http.createServer((req, res) => {
 
 ensureDb();
 server.listen(PORT, () => {
-  console.log(`Elite Binary backend running at http://localhost:${PORT}`);
-  console.log(`Admin key: ${ADMIN_KEY}`);
+  console.log(`\n✅ Elite Binary backend running at http://localhost:${PORT}`);
+  console.log(`🔐 Admin key: ${ADMIN_KEY}`);
+  console.log(`🔴 Mode: ${MOCK_PAYMENTS ? 'MOCK (Testing)' : 'REAL M-Pesa (Live)'}`);
+  console.log(`💳 Wallet: NCBA Loop 440200250861 / Channel ID 7598`);
+  console.log(`🌍 Environment: ${MPESA_ENV}\n`);
 });

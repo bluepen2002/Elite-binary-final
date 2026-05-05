@@ -1,0 +1,15 @@
+{
+  "config": {
+    "settlementMode": "fair_server",
+    "payoutRate": 0.9,
+    "winProbability": 0.5,
+    "settlementDelayMs": 900,
+    "designatedWallet": "NCBA Loop 440200250861 / Channel ID 7598",
+    "mockPayments": true
+  },
+  "users": [],
+  "deposits": [],
+  "withdrawals": [],
+  "trades": [],
+  "ledger": []
+}

@@ -1,0 +1,13 @@
+{
+  "name": "elite-binary-backend",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Elite Binary wallet, deposit, withdrawal, fair settlement, and admin operations backend.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

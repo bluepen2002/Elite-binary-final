@@ -13,6 +13,9 @@ const MPESA_ENV = (process.env.MPESA_ENV || 'sandbox').toLowerCase();
 const MPESA_HOST = MPESA_ENV === 'production' ? 'api.safaricom.co.ke' : 'sandbox.safaricom.co.ke';
 const MOCK_PAYMENTS = process.env.MOCK_PAYMENTS === 'false' ? false : true;
 
+const MINIMUM_DEPOSIT = 100; // Minimum deposit in KES
+const REFERRAL_COMMISSION = 0.10; // 10% referral commission
+
 const defaultDb = {
   config: {
     settlementMode: 'fair_server',
@@ -26,7 +29,8 @@ const defaultDb = {
   deposits: [],
   withdrawals: [],
   trades: [],
-  ledger: []
+  ledger: [],
+  referrals: [] // Track referral relationships
 };
 
 function ensureDb() {
@@ -40,7 +44,7 @@ function readDb() {
   ensureDb();
   const db = JSON.parse(fs.readFileSync(DB_PATH, 'utf8'));
   db.config = { ...defaultDb.config, ...(db.config || {}) };
-  for (const key of ['users', 'deposits', 'withdrawals', 'trades', 'ledger']) {
+  for (const key of ['users', 'deposits', 'withdrawals', 'trades', 'ledger', 'referrals']) {
     if (!Array.isArray(db[key])) db[key] = [];
   }
   return db;
@@ -317,9 +321,28 @@ async function routeApi(req, res) {
           name: String(body.name || identifier).trim(),
           balance: body.demo ? 10000 : 0,
           demo: Boolean(body.demo),
+          referralCode: `REF${crypto.randomBytes(4).toString('hex').toUpperCase()}`,
+          referredBy: String(body.referralCode || '').trim() || null,
+          totalDeposits: 0,
+          totalWithdrawn: 0,
+          totalReferralEarnings: 0,
           createdAt: now()
         };
         db.users.push(user);
+        
+        // If user has a referral code, credit referrer
+        if (user.referredBy) {
+          const referrer = db.users.find((u) => u.referralCode === user.referredBy);
+          if (referrer) {
+            db.referrals.push({
+              id: id('ref'),
+              referrerId: referrer.id,
+              referredUserId: user.id,
+              createdAt: now()
+            });
+          }
+        }
+
         ledger(db, {
           userId: user.id,
           type: body.demo ? 'demo_credit' : 'wallet_opened',
@@ -335,7 +358,13 @@ async function routeApi(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/wallet') {
       const user = findUser(db, url.searchParams.get('userId'));
       if (!user) return send(res, 404, { error: 'User not found' });
-      return send(res, 200, { user, ledger: db.ledger.filter((l) => l.userId === user.id).slice(-50) });
+      const userReferrals = db.referrals.filter((r) => r.referrerId === user.id);
+      return send(res, 200, { 
+        user, 
+        ledger: db.ledger.filter((l) => l.userId === user.id).slice(-50),
+        referralCount: userReferrals.length,
+        referralEarnings: user.totalReferralEarnings || 0
+      });
     }
 
     if (req.method === 'POST' && url.pathname === '/api/deposits') {
@@ -343,7 +372,7 @@ async function routeApi(req, res) {
       const user = findUser(db, body.userId);
       const amount = money(body.amount);
       if (!user) return send(res, 404, { error: 'User not found' });
-      if (amount <= 0) return send(res, 400, { error: 'Deposit amount must be greater than zero' });
+      if (amount < MINIMUM_DEPOSIT) return send(res, 400, { error: `Minimum deposit is KES ${MINIMUM_DEPOSIT}` });
       if (String(body.method || 'mpesa') === 'mpesa' && !String(body.phone || '').trim()) {
         return send(res, 400, { error: 'M-Pesa phone number is required' });
       }
@@ -372,6 +401,25 @@ async function routeApi(req, res) {
 
       if (deposit.status === 'completed') {
         user.balance = money(user.balance + amount);
+        user.totalDeposits = money(user.totalDeposits + amount);
+        
+        // Credit referrer if applicable
+        if (user.referredBy) {
+          const referrer = db.users.find((u) => u.referralCode === user.referredBy);
+          if (referrer) {
+            const commission = money(amount * REFERRAL_COMMISSION);
+            referrer.balance = money(referrer.balance + commission);
+            referrer.totalReferralEarnings = money(referrer.totalReferralEarnings + commission);
+            ledger(db, {
+              userId: referrer.id,
+              type: 'referral_commission',
+              amount: commission,
+              balanceAfter: referrer.balance,
+              reference: `${deposit.id}_ref`
+            });
+          }
+        }
+
         ledger(db, {
           userId: user.id,
           type: 'deposit',
@@ -404,6 +452,25 @@ async function routeApi(req, res) {
         const user = findUser(db, deposit.userId);
         if (user && !db.ledger.some((l) => l.reference === deposit.id && l.type === 'deposit')) {
           user.balance = money(user.balance + deposit.amount);
+          user.totalDeposits = money(user.totalDeposits + deposit.amount);
+          
+          // Credit referrer
+          if (user.referredBy) {
+            const referrer = db.users.find((u) => u.referralCode === user.referredBy);
+            if (referrer) {
+              const commission = money(deposit.amount * REFERRAL_COMMISSION);
+              referrer.balance = money(referrer.balance + commission);
+              referrer.totalReferralEarnings = money(referrer.totalReferralEarnings + commission);
+              ledger(db, {
+                userId: referrer.id,
+                type: 'referral_commission',
+                amount: commission,
+                balanceAfter: referrer.balance,
+                reference: `${deposit.id}_ref`
+              });
+            }
+          }
+
           ledger(db, {
             userId: user.id,
             type: 'deposit',
@@ -475,6 +542,7 @@ async function routeApi(req, res) {
       if (user.balance < amount) return send(res, 400, { error: 'Insufficient wallet balance' });
 
       user.balance = money(user.balance - amount);
+      user.totalWithdrawn = money(user.totalWithdrawn + amount);
       const withdrawal = {
         id: id('wd'),
         userId: user.id,
@@ -517,6 +585,7 @@ async function routeApi(req, res) {
         const user = findUser(db, withdrawal.userId);
         if (user && !db.ledger.some((l) => l.reference === `${withdrawal.id}:refund`)) {
           user.balance = money(user.balance + withdrawal.amount);
+          user.totalWithdrawn = money(user.totalWithdrawn - withdrawal.amount);
           ledger(db, {
             userId: user.id,
             type: 'withdrawal_refund',
@@ -594,5 +663,7 @@ server.listen(PORT, () => {
   console.log(`🔐 Admin key: ${ADMIN_KEY}`);
   console.log(`🔴 Mode: ${MOCK_PAYMENTS ? 'MOCK (Testing)' : 'REAL M-Pesa (Live)'}`);
   console.log(`💳 Wallet: NCBA Loop 440200250861 / Channel ID 7598`);
-  console.log(`🌍 Environment: ${MPESA_ENV}\n`);
+  console.log(`🌍 Environment: ${MPESA_ENV}`);
+  console.log(`💰 Minimum Deposit: KES ${MINIMUM_DEPOSIT}`);
+  console.log(`🤝 Referral Commission: ${(REFERRAL_COMMISSION * 100)}%\n`);
 });
